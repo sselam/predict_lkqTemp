@@ -16,7 +16,7 @@ import pandas as pd
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 import seaborn as sns
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 
 from pandas import DataFrame
 from statsmodels.tsa.statespace.sarimax import SARIMAX#
@@ -29,14 +29,18 @@ from statsmodels.tsa.stattools import adfuller
 groupValuesBy = 'D'
 deltaValue = 20
 testPointsFactor = 0.15
+forcast_days = 10
 min_rpm = 300
 min_amps = 50
 #tag_name = "MtrAInterPole1Temp"
 #tag_name = "MtrBField2Temp"
-tag_name = "MtrAField1Temp"
+#tag_name = "MtrAField1Temp"
 #tag_name = "MtrAField2Temp"
-dataFromDate = '09/20/2022'
-dataToDate = '12/31/2022'
+#tag_name = "MtrBField1Temp"
+tag_name = "MtrBInterPole1Temp"
+dataFromDate = '09/01/2022'
+dataToDate = datetime.now().strftime("%m/%d/%Y")
+#dataToDate = '01/31/2023'
 
 
 # get spectare authentication token
@@ -108,10 +112,11 @@ def clean_data(df):
 
     df.index = df.index
 
-    max_df = df.resample('12h', offset='5h')['temp'].max()
-    min_df = df.resample('12h', offset='5h')['temp'].min()
+    # resample data to daily maximum and daily minimum temperatures
+    max_df = df.resample('D', offset='0h')['temp'].max()
+    min_df = df.resample('D', offset='0h')['temp'].min()
 
-    # merge the dataframes on timestamp ('ts')
+    # merge the dataframes on timestamp ('ts') to calculate delta (the difference between max and min) and keep max only if delta is greater than "deltaValue"
     df_min_max = reduce(lambda left, right: pd.merge(left, right, on=['ts'], how='outer'), [max_df, min_df])
     df_min_max.columns = ['max_temp', 'min_temp']
     df_min_max['delta'] = df_min_max['max_temp'] - df_min_max['min_temp']
@@ -119,43 +124,7 @@ def clean_data(df):
     df_max_temp = df_min_max.drop(columns=['min_temp', 'delta'])
     print(df_max_temp)
 
-    #groupby day and get max and ptp columns
-    # df_min_max['max_temp'] = df_min_max['max_temp'].astype(float)
-    # df_max_temp = df_min_max.resample("D")['max_temp'].max()
     return df_max_temp
-
-    # # groupby date and get delta of max & min temp values
-    # daily_delta_df1 = pd.DataFrame()
-    # # daily_delta_df1['delta'] = df.resample(rule='D')['value'].agg(np.ptp)
-    #
-    # # group by 24 hours, and get delta (between max and min)
-    # daily_delta_df1['delta'] = df.resample('24h', offset='19h', label='right')['temp'].agg(np.ptp)
-    #
-    # # remove values with delta of < deltaValue
-    # df2 = daily_delta_df1[daily_delta_df1['delta'] >= deltaValue]
-    # print(df2)
-    #
-    # # dataframe of daily maximum temperatures
-    # daily_max_df = pd.DataFrame()
-    # # daily_max_df['value'] = df.resample('D')['value'].max()
-    #
-    # # group by 24 hours
-    # daily_max_df['temp'] = df.resample('24h', offset='7h', label='right')['temp'].max()
-    #
-    # print(daily_max_df)
-    #
-    # #alternative to daily maximum temperatures
-    # # df = df.groupby(pd.Grouper(freq='D'))['value'].transform('max')
-    # # print(len(df))
-    #
-    # # remove rows with NaN values
-    # daily_max_df = daily_max_df.dropna()
-    # print(daily_max_df)
-    #
-    # # print(daily_max_df.head(68))
-    #
-    # # match dates of df2 to filter only those dates of daily_max_df and return it
-    # return daily_max_df[daily_max_df.index.isin(df2.index)]
 
 
 def splitData(dayMaxTempReadingdf):
@@ -181,7 +150,7 @@ def predict_plot(train, test):
     y = train['max_temp']
     #y.index = y.index.to_period('D')
 
-    SARIMAXmodel = sm.tsa.statespace.SARIMAX(y, order=(0, 0, 1), seasonal_order=(1, 1, 1, 12),
+    SARIMAXmodel = sm.tsa.statespace.SARIMAX(y, order=(0, 0, 1), seasonal_order=(0, 1, 1, 12),
                                              enforce_stationarity=False, enforce_invertibility=False)
     SARIMAXmodel = SARIMAXmodel.fit(disp=False)
 
@@ -193,6 +162,36 @@ def predict_plot(train, test):
     plt.plot(y_pred_out, color='Blue', label='SARIMA Predictions')
     plt.legend()
     plt.show()
+
+
+#get data forcast for (forcast_days) number of days
+def predict_future(df):
+
+    days = pd.date_range(df.index[-1] + timedelta(1), df.index[-1] + timedelta(days=10), freq='D')
+
+    SARIMAXmodel = sm.tsa.statespace.SARIMAX(df['max_temp'], order=(0, 0, 1), seasonal_order=(0, 1, 1, 12),
+                                             enforce_stationarity=False, enforce_invertibility=False)
+    SARIMAXmodel = SARIMAXmodel.fit(disp=False)
+
+    y_pred = SARIMAXmodel.get_forecast(forcast_days)
+    y_pred_df = y_pred.conf_int(alpha=0.05)
+    y_pred_df["Predictions"] = SARIMAXmodel.predict(start=y_pred_df.index[0], end=y_pred_df.index[-1])
+    y_pred_df.index = days
+    y_pred_out = y_pred_df["Predictions"]
+    prediction_data = pd.DataFrame(y_pred_out).reset_index()
+    prediction_data.columns = ['ts', 'value']
+    prediction_data = prediction_data.set_index('ts')
+    prediction_data.index = prediction_data.index.astype(np.int64)
+    return prediction_data
+
+    # plt.plot(y_pred_out, color='Blue', label='SARIMA Predictions')
+    # plt.legend()
+    # plt.show()
+
+
+# send forcast data to spectare
+def prediction_to_spectare(data_forcast):
+    #TODO
 
 
 def main():
@@ -233,44 +232,19 @@ def main():
     #df_merged['temp'] = df_merged['temp'].astype(float)
     df_merged['rpm'] = df_merged['rpm'].astype(float)
     df_merged['amps'] = df_merged['amps'].astype(float)
+
     df_filtered = df_merged.loc[(df_merged['rpm'] > min_rpm) & (df_merged['amps'] > min_amps), ['ts', "temp"]]
 
     #and change temp dataframe to timeseries dataframe with datetime index
     df_filtered['ts'] = pd.to_datetime(df_filtered['ts'], unit='ms')
     df_filtered = df_filtered.set_index(pd.DatetimeIndex(df_filtered['ts']))
 
-    #df_time_temp.index + pd.DateOffset(hours=5)
+    #adjust time to local time by adding 7 hours to timestamp index
+    df_filtered.index + pd.DateOffset(hours=7)
 
     # write the filtered output to csv file
     pd.DataFrame.to_csv(df_filtered, 'filtered_out.csv', sep=',', na_rep='--', index=False)
 
-    # temp_df['ts'] = temp_df['ts'] / 1000
-    # # convert timestamp to datetime and in Eastern timezone
-    # # df1['ts'] = pd.to_datetime(df1['ts'], unit='s').dt.tz_localize('utc').dt.tz_convert('US/Eastern')
-    #
-    # # convert timestamp to datetime
-    # temp_df['ts'] = pd.to_datetime(temp_df['ts'], unit='s')
-    # df1 = temp_df.set_index('ts')
-    # rpm_df['ts'] = rpm_df['ts'] / 1000
-    # # convert timestamp to datetime and in Eastern timezone
-    # # df2['ts'] = pd.to_datetime(df2['ts'], unit='s').dt.tz_localize('utc').dt.tz_convert('US/Eastern')
-    #
-    # # convert timestamp to datetime and in Eastern timezone
-    # rpm_df['ts'] = pd.to_datetime(rpm_df['ts'], unit='s')
-    # df2 = rpm_df.set_index('ts')
-    #
-    # df = pd.merge(df1, df2, left_index=True, right_index=True)
-    # df.index = pd.DatetimeIndex(df.index) #.to_period('D')
-    # # remove data if rpm is < 300
-    # df['rpm'] = df['rpm'].astype(float)
-    # df3 = df[df['rpm'] > min_rpm]
-    # df4 = df3.drop(columns=['rpm'])
-    # df4.to_csv('test_out1.csv')
-
-    # print(len(df1))
-    # print(df2.tail())
-    # print(df4.head())
-    #
     #clean data
     cleanDataDf = clean_data(df_filtered)
     #print(cleanDataDf)
@@ -278,12 +252,18 @@ def main():
     # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
     #
     #split data into training and test
-    train, test = splitData(cleanDataDf)
+    # train, test = splitData(cleanDataDf)
     #print(train.head(68))
     # print(test)
 
     #plot train, test; predict; and plot forcast
-    predict_plot(train, test)
+    # predict_plot(train, test)
+
+    #predict future values
+    data_forcast = predict_future(cleanDataDf)
+
+    # and send to spectare
+    prediction_to_spectare(data_forcast)
 
 
 # Press the green button in the gutter to run the script.
