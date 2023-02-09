@@ -33,12 +33,12 @@ forcast_days = 10
 min_rpm = 300
 min_amps = 50
 #tag_name = "MtrAInterPole1Temp"
-#tag_name = "MtrBField2Temp"
+tag_name = "MtrBField2Temp"
 #tag_name = "MtrAField1Temp"
 #tag_name = "MtrAField2Temp"
 #tag_name = "MtrBField1Temp"
-tag_name = "MtrBInterPole1Temp"
-dataFromDate = '09/01/2022'
+#tag_name = "MtrBInterPole1Temp"
+dataFromDate = '11/01/2022'
 dataToDate = datetime.now().strftime("%m/%d/%Y")
 #dataToDate = '01/31/2023'
 
@@ -182,16 +182,38 @@ def predict_future(df):
     prediction_data.columns = ['ts', 'value']
     prediction_data = prediction_data.set_index('ts')
     prediction_data.index = prediction_data.index.astype(np.int64)
-    return prediction_data
 
-    # plt.plot(y_pred_out, color='Blue', label='SARIMA Predictions')
-    # plt.legend()
-    # plt.show()
+    plt.plot(y_pred_out, color='Blue', label='SARIMA Predictions')
+    plt.legend()
+    plt.show()
+    return prediction_data
 
 
 # send forcast data to spectare
 def prediction_to_spectare(data_forcast):
-    #TODO
+    headers = {
+        'Content-Type': 'application/json',
+    }
+    data_forcast.reset_index(inplace=True)
+    data_forcast.columns = ['ts', tag_name]
+
+    #data = json.dumps({tag_name: data_forcast.to_dict('records')}, indent = 4)
+    print(data_forcast)
+    telemetry = []
+    data_forcast['ts']=data_forcast['ts']/1000/1000
+    #print(data_forcast)
+    #for j in range(len(data_forcast)):
+    for ind in data_forcast.index:
+        telemetry.append({"ts": data_forcast['ts'][ind], "values": {tag_name:data_forcast[tag_name][ind]}})
+    print(telemetry)
+
+    # prepare data to upload to spectare
+    # convert data list to json
+    # ensure default=str to take care of numpy type int64 mismatch error
+    data = json.dumps(telemetry, default=datetime)
+    #for i in range(len(telemetry)):
+    response = requests.post('http://ss1.spectare-iss.com:8080/api/v1/Hj4BS1jdQ1SoIZKT0J8r/telemetry', headers=headers, data=data)
+    print(response)
 
 
 def main():
@@ -252,12 +274,12 @@ def main():
     # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
     #
     #split data into training and test
-    # train, test = splitData(cleanDataDf)
+    #train, test = splitData(cleanDataDf)
     #print(train.head(68))
     # print(test)
 
     #plot train, test; predict; and plot forcast
-    # predict_plot(train, test)
+    #predict_plot(train, test)
 
     #predict future values
     data_forcast = predict_future(cleanDataDf)
