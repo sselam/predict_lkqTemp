@@ -13,10 +13,12 @@ import numpy as np
 import onetimepad
 import requests
 import pandas as pd
+from prophet import Prophet
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta, time
+
 
 from pandas import DataFrame
 from statsmodels.tsa.statespace.sarimax import SARIMAX#
@@ -32,12 +34,14 @@ testPointsFactor = 0.15
 forcast_days = 10
 min_rpm = 300
 min_amps = 50
+#TODO create a list of tagnames (maybe from spectare) and forcast for all tags
+#tag_names=["MtrAField1Temp", "MtrAField2Temp", "MtrBField1Temp", "MtrBField2Temp", "MtrAInterPole1Temp", "MtrBInterPole1Temp"]
 #tag_name = "MtrAInterPole1Temp"
-tag_name = "MtrBField2Temp"
+#tag_name = "MtrBField2Temp"
 #tag_name = "MtrAField1Temp"
 #tag_name = "MtrAField2Temp"
 #tag_name = "MtrBField1Temp"
-#tag_name = "MtrBInterPole1Temp"
+tag_name = "MtrBInterPole1Temp"
 dataFromDate = '11/01/2022'
 dataToDate = datetime.now().strftime("%m/%d/%Y")
 #dataToDate = '01/31/2023'
@@ -236,56 +240,71 @@ def main():
 
     temp_df = pd.DataFrame(list(tempData.values())[0], columns=['ts', 'value'])
     temp_df.columns = ['ts', 'temp']
-    rpm_df = pd.DataFrame(list(tempData.values())[1], columns=['ts', 'value'])
-    rpm_df.columns = ['ts', 'rpm']
-    amps_df = pd.DataFrame(list(tempData.values())[2], columns=['ts', 'value'])
-    amps_df.columns = ['ts', 'amps']
+    # and change temp dataframe to timeseries dataframe with datetime index
+    temp_df['ts'] = pd.to_datetime(temp_df['ts'], unit='ms')
+    temp_df.columns = ['ds', 'y']
+    max_df = temp_df.groupby([temp_df['ds'].dt.date]).max() #df.groupby([df['Date_Time'].dt.date]).mean()
+    m = Prophet()
+    m.fit(max_df)
+    future_ts = m.make_future_dataframe(periods=15)
+    forecast = m.predict(future_ts)
+    print(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']])
 
-    #compose a list of the dataframes to merge
-    merge_frames = [temp_df, rpm_df, amps_df]
+    fig1 = m.plot(forecast)
+    fig2 = m.plot_components(forecast)
 
-    #merge the dataframes on timestamp ('ts')
-    df_merged = reduce(lambda  left,right: pd.merge(left, right, on=['ts'], how='outer'), merge_frames).fillna('void')
+    plt.show()
 
-    #write the merged output to csv file
-    pd.DataFrame.to_csv(df_merged, 'merged_out.csv', sep=',', na_rep='--', index=False)
-
-    #change values to float and remove records with rpm<300 or amps<50 (system operational)
-    #df_merged['temp'] = df_merged['temp'].astype(float)
-    df_merged['rpm'] = df_merged['rpm'].astype(float)
-    df_merged['amps'] = df_merged['amps'].astype(float)
-
-    df_filtered = df_merged.loc[(df_merged['rpm'] > min_rpm) & (df_merged['amps'] > min_amps), ['ts', "temp"]]
-
-    #and change temp dataframe to timeseries dataframe with datetime index
-    df_filtered['ts'] = pd.to_datetime(df_filtered['ts'], unit='ms')
-    df_filtered = df_filtered.set_index(pd.DatetimeIndex(df_filtered['ts']))
-
-    #adjust time to local time by adding 7 hours to timestamp index
-    df_filtered.index + pd.DateOffset(hours=7)
-
-    # write the filtered output to csv file
-    pd.DataFrame.to_csv(df_filtered, 'filtered_out.csv', sep=',', na_rep='--', index=False)
-
-    #clean data
-    cleanDataDf = clean_data(df_filtered)
-    #print(cleanDataDf)
+    # rpm_df = pd.DataFrame(list(tempData.values())[1], columns=['ts', 'value'])
+    # rpm_df.columns = ['ts', 'rpm']
+    # amps_df = pd.DataFrame(list(tempData.values())[2], columns=['ts', 'value'])
+    # amps_df.columns = ['ts', 'amps']
     #
-    # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
+    # #compose a list of the dataframes to merge
+    # merge_frames = [temp_df, rpm_df, amps_df]
     #
-    #split data into training and test
-    #train, test = splitData(cleanDataDf)
-    #print(train.head(68))
-    # print(test)
-
-    #plot train, test; predict; and plot forcast
-    #predict_plot(train, test)
-
-    #predict future values
-    data_forcast = predict_future(cleanDataDf)
-
-    # and send to spectare
-    prediction_to_spectare(data_forcast)
+    # #merge the dataframes on timestamp ('ts')
+    # df_merged = reduce(lambda  left,right: pd.merge(left, right, on=['ts'], how='outer'), merge_frames).fillna('void')
+    #
+    # #write the merged output to csv file
+    # pd.DataFrame.to_csv(df_merged, 'merged_out.csv', sep=',', na_rep='--', index=False)
+    #
+    # #change values to float and remove records with rpm<300 or amps<50 (system operational)
+    # #df_merged['temp'] = df_merged['temp'].astype(float)
+    # df_merged['rpm'] = df_merged['rpm'].astype(float)
+    # df_merged['amps'] = df_merged['amps'].astype(float)
+    #
+    # df_filtered = df_merged.loc[(df_merged['rpm'] > min_rpm) & (df_merged['amps'] > min_amps), ['ts', "temp"]]
+    #
+    # #and change temp dataframe to timeseries dataframe with datetime index
+    # df_filtered['ts'] = pd.to_datetime(df_filtered['ts'], unit='ms')
+    # df_filtered = df_filtered.set_index(pd.DatetimeIndex(df_filtered['ts']))
+    #
+    # #adjust time to local time by adding 7 hours to timestamp index
+    # df_filtered.index + pd.DateOffset(hours=7)
+    #
+    # # write the filtered output to csv file
+    # pd.DataFrame.to_csv(df_filtered, 'filtered_out.csv', sep=',', na_rep='--', index=False)
+    #
+    # #clean data
+    # cleanDataDf = clean_data(df_filtered)
+    # #print(cleanDataDf)
+    # #
+    # # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
+    # #
+    # #split data into training and test
+    # #train, test = splitData(cleanDataDf)
+    # #print(train.head(68))
+    # # print(test)
+    #
+    # #plot train, test; predict; and plot forcast
+    # #predict_plot(train, test)
+    #
+    # #predict future values
+    # data_forcast = predict_future(cleanDataDf)
+    #
+    # # and send to spectare
+    # prediction_to_spectare(data_forcast)
 
 
 # Press the green button in the gutter to run the script.
