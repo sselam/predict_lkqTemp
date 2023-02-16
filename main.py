@@ -32,8 +32,9 @@ testPointsFactor = 0.15
 forcast_days = 10
 min_rpm = 300
 min_amps = 50
+tag_names = ["MtrAField1Temp", "MtrAField2Temp", "MtrAInterPole1Temp", "MtrBField1Temp", "MtrBField2Temp", "MtrBInterPole1Temp"]
 #tag_name = "MtrAInterPole1Temp"
-tag_name = "MtrBField2Temp"
+#tag_name = "MtrBField2Temp"
 #tag_name = "MtrAField1Temp"
 #tag_name = "MtrAField2Temp"
 #tag_name = "MtrBField1Temp"
@@ -71,7 +72,7 @@ def get_time_stamp(given_date):
 
 
 # get spectare temp data (as dayly max aggregate) and return dataframe of day, value(max-temp)
-def get_lkq_temp(JWT_TOKEN):
+def get_lkq_temp(JWT_TOKEN, tag_name):
     headers = {
         'content-type': 'application/json',
         'X-Authorization': "Bearer " + JWT_TOKEN
@@ -137,7 +138,7 @@ def splitData(dayMaxTempReadingdf):
     return dayMaxTempReadingdf[:-test_points], dayMaxTempReadingdf[-test_points:]
 
 
-def predict_plot(train, test):
+def predict_plot(train, test, tag_name):
     sns.set()
     plt.ylabel('Temp ('+tag_name+')')
     plt.xlabel('Date')
@@ -190,7 +191,7 @@ def predict_future(df):
 
 
 # send forcast data to spectare
-def prediction_to_spectare(data_forcast):
+def prediction_to_spectare(data_forcast, tag_name):
     headers = {
         'Content-Type': 'application/json',
     }
@@ -219,73 +220,75 @@ def prediction_to_spectare(data_forcast):
 def main():
     JWT_TOKEN = get_token()
 
-    #get spectare data as json (if data not in file already)
-    datafile = "C:\\Users\\Selamawit.Woldeamlak\\PycharmProjects\\predict_lkqTemp\\{tag_name}_data.json".format(tag_name = tag_name)
-    print(datafile)
-    if not os.path.exists(datafile) or os.path.getsize(datafile) <= 0:
-        get_lkq_temp(JWT_TOKEN)
-        print("file not found")
+    for tag_name in tag_names:
 
-    #else:
-    # Opening JSON file
-    f = open(tag_name+'_data.json')
+        #get spectare data as json (if data not in file already)
+        datafile = "C:\\Users\\Selamawit.Woldeamlak\\PycharmProjects\\predict_lkqTemp\\{tag_name}_data.json".format(tag_name = tag_name)
+        print(datafile)
+        if not os.path.exists(datafile) or os.path.getsize(datafile) <= 0:
+            get_lkq_temp(JWT_TOKEN, tag_name)
+            print("file not found")
 
-    # returns JSON object as a dictionary
-    tempData = json.load(f)
-    print(len(list(tempData.keys())))
+        #else:
+        # Opening JSON file
+        f = open(tag_name+'_data.json')
 
-    temp_df = pd.DataFrame(list(tempData.values())[0], columns=['ts', 'value'])
-    temp_df.columns = ['ts', 'temp']
-    rpm_df = pd.DataFrame(list(tempData.values())[1], columns=['ts', 'value'])
-    rpm_df.columns = ['ts', 'rpm']
-    amps_df = pd.DataFrame(list(tempData.values())[2], columns=['ts', 'value'])
-    amps_df.columns = ['ts', 'amps']
+        # returns JSON object as a dictionary
+        tempData = json.load(f)
+        print(len(list(tempData.keys())))
 
-    #compose a list of the dataframes to merge
-    merge_frames = [temp_df, rpm_df, amps_df]
+        temp_df = pd.DataFrame(list(tempData.values())[0], columns=['ts', 'value'])
+        temp_df.columns = ['ts', 'temp']
+        rpm_df = pd.DataFrame(list(tempData.values())[1], columns=['ts', 'value'])
+        rpm_df.columns = ['ts', 'rpm']
+        amps_df = pd.DataFrame(list(tempData.values())[2], columns=['ts', 'value'])
+        amps_df.columns = ['ts', 'amps']
 
-    #merge the dataframes on timestamp ('ts')
-    df_merged = reduce(lambda  left,right: pd.merge(left, right, on=['ts'], how='outer'), merge_frames).fillna('void')
+        #compose a list of the dataframes to merge
+        merge_frames = [temp_df, rpm_df, amps_df]
 
-    #write the merged output to csv file
-    pd.DataFrame.to_csv(df_merged, 'merged_out.csv', sep=',', na_rep='--', index=False)
+        #merge the dataframes on timestamp ('ts')
+        df_merged = reduce(lambda  left,right: pd.merge(left, right, on=['ts'], how='outer'), merge_frames).fillna('void')
 
-    #change values to float and remove records with rpm<300 or amps<50 (system operational)
-    #df_merged['temp'] = df_merged['temp'].astype(float)
-    df_merged['rpm'] = df_merged['rpm'].astype(float)
-    df_merged['amps'] = df_merged['amps'].astype(float)
+        #write the merged output to csv file
+        pd.DataFrame.to_csv(df_merged, 'merged_out.csv', sep=',', na_rep='--', index=False)
 
-    df_filtered = df_merged.loc[(df_merged['rpm'] > min_rpm) & (df_merged['amps'] > min_amps), ['ts', "temp"]]
+        #change values to float and remove records with rpm<300 or amps<50 (system operational)
+        #df_merged['temp'] = df_merged['temp'].astype(float)
+        df_merged['rpm'] = df_merged['rpm'].astype(float)
+        df_merged['amps'] = df_merged['amps'].astype(float)
 
-    #and change temp dataframe to timeseries dataframe with datetime index
-    df_filtered['ts'] = pd.to_datetime(df_filtered['ts'], unit='ms')
-    df_filtered = df_filtered.set_index(pd.DatetimeIndex(df_filtered['ts']))
+        df_filtered = df_merged.loc[(df_merged['rpm'] > min_rpm) & (df_merged['amps'] > min_amps), ['ts', "temp"]]
 
-    #adjust time to local time by adding 7 hours to timestamp index
-    df_filtered.index + pd.DateOffset(hours=7)
+        #and change temp dataframe to timeseries dataframe with datetime index
+        df_filtered['ts'] = pd.to_datetime(df_filtered['ts'], unit='ms')
+        df_filtered = df_filtered.set_index(pd.DatetimeIndex(df_filtered['ts']))
 
-    # write the filtered output to csv file
-    pd.DataFrame.to_csv(df_filtered, 'filtered_out.csv', sep=',', na_rep='--', index=False)
+        #adjust time to local time by adding 7 hours to timestamp index
+        df_filtered.index + pd.DateOffset(hours=7)
 
-    #clean data
-    cleanDataDf = clean_data(df_filtered)
-    #print(cleanDataDf)
-    #
-    # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
-    #
-    #split data into training and test
-    #train, test = splitData(cleanDataDf)
-    #print(train.head(68))
-    # print(test)
+        # write the filtered output to csv file
+        pd.DataFrame.to_csv(df_filtered, 'filtered_out.csv', sep=',', na_rep='--', index=False)
 
-    #plot train, test; predict; and plot forcast
-    #predict_plot(train, test)
+        #clean data
+        cleanDataDf = clean_data(df_filtered)
+        #print(cleanDataDf)
+        #
+        # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
+        #
+        #split data into training and test
+        #train, test = splitData(cleanDataDf)
+        #print(train.head(68))
+        # print(test)
 
-    #predict future values
-    data_forcast = predict_future(cleanDataDf)
+        #plot train, test; predict; and plot forcast
+        #predict_plot(train, test, tag_name)
 
-    # and send to spectare
-    prediction_to_spectare(data_forcast)
+        #predict future values
+        data_forcast = predict_future(cleanDataDf)
+
+        # and send to spectare
+        prediction_to_spectare(data_forcast, tag_name)
 
 
 # Press the green button in the gutter to run the script.
