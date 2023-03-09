@@ -6,6 +6,7 @@
 
 import configparser
 import json
+import math
 import os
 from functools import reduce
 
@@ -17,6 +18,16 @@ import statsmodels.api as sm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta, time
+import tensorflow as tf
+from tensorflow import keras
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.callbacks import ModelCheckpoint
+from keras.losses import MeanSquaredError
+from keras.metrics import RootMeanSquaredError
+from keras.optimizers import Adam
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
 
 from pandas import DataFrame
 from statsmodels.tsa.statespace.sarimax import SARIMAX#
@@ -32,7 +43,8 @@ testPointsFactor = 0.15
 forcast_days = 10
 min_rpm = 300
 min_amps = 50
-tag_names = ["MtrAField1Temp", "MtrAField2Temp", "MtrAInterPole1Temp", "MtrBField1Temp", "MtrBField2Temp", "MtrBInterPole1Temp"]
+tag_names = ["MtrAField1Temp"]#, "MtrAField2Temp", "MtrAInterPole1Temp", "MtrBField1Temp", "MtrBField2Temp", "MtrBInterPole1Temp"]
+WINDOW_SIZE = 5
 #tag_name = "MtrAInterPole1Temp"
 #tag_name = "MtrBField2Temp"
 #tag_name = "MtrAField1Temp"
@@ -191,7 +203,7 @@ def predict_future(df):
 
 
 # send forcast data to spectare
-def prediction_to_spectare(data_forcast, tag_name):
+def prediction_to_spectare(data_forcast, tag_name, forcast):
     headers = {
         'Content-Type': 'application/json',
     }
@@ -199,9 +211,16 @@ def prediction_to_spectare(data_forcast, tag_name):
     data_forcast.columns = ['ts', tag_name]
 
     #data = json.dumps({tag_name: data_forcast.to_dict('records')}, indent = 4)
-    print(data_forcast)
+
     telemetry = []
-    data_forcast['ts']=data_forcast['ts']/1000/1000
+    if(forcast):
+        data_forcast['ts'] = data_forcast['ts']/1000/1000
+        #defaul_type = datetime
+    else:
+        data_forcast['ts'] = data_forcast.ts.astype('int64') // 10 ** 9
+        #data_forcast['ts'] = pd.Timestamp(data_forcast['ts']).timestamp()  #pd.to_datetime(data_forcast['ts']).astype('int64') / 10**9
+        #defaul_type = int
+        #print(data_forcast.head())
     #print(data_forcast)
     #for j in range(len(data_forcast)):
     for ind in data_forcast.index:
@@ -210,12 +229,60 @@ def prediction_to_spectare(data_forcast, tag_name):
 
     # prepare data to upload to spectare
     # convert data list to json
-    # ensure default=str to take care of numpy type int64 mismatch error
+    # ensure default=datetime to take care of numpy type int64 mismatch error
     data = json.dumps(telemetry, default=datetime)
     #for i in range(len(telemetry)):
-    response = requests.post('http://ss1.spectare-iss.com:8080/api/v1/Hj4BS1jdQ1SoIZKT0J8r/telemetry', headers=headers, data=data)
+    if(forcast):
+        response = requests.post('http://ss1.spectare-iss.com:8080/api/v1/Hj4BS1jdQ1SoIZKT0J8r/telemetry', headers=headers, data=data)
+    else:
+        response = requests.post('http://ss1.spectare-iss.com:8080/api/v1/unne6wcSK7oLbA2cEWL3/telemetry',
+                                 headers=headers, data=data)
     print(response)
 
+
+def df_to_x_y(df, window_size=5):
+
+    df_as_np = df.to_numpy()
+    x=[]
+    y=[]
+    for i in range(len(df_as_np)-window_size):
+        row = [[a] for a in df_as_np[i:i+5]]
+        x.append(row)
+        label = df_as_np[i+5]
+        y.append(label)
+
+    return np.array(x), np.array(y)
+
+
+def model_lstm(x, y):
+
+    x_train, y_train = x[:60000], y[:60000]
+    x_val, y_val = x[60000:65000], y[60000:65000]
+    X_test, y_test = x[65000:], y[65000:]
+
+    model1 = Sequential()
+    model1.add(InputLayer((5,1)))
+    model1.add(LSTM(64))
+    model1.add(Dense(8, 'relu'))
+    model1.add(Dense(1, 'linear'))
+    print(model1.summary())
+
+    cp1 = ModelCheckpoint('model1/', save_best_only=True)
+    model1.compile(loss=MeanSquaredError(), optimizer=Adam(learning_rate=0.0001), metrics=[RootMeanSquaredError()])
+
+    model1.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=10, callbacks=[cp1])
+
+
+def to_sequences(dataset, seq_size=1):
+    x = []
+    y = []
+
+    for i in range(len(dataset)-seq_size-1):
+        window = dataset[i:(i+seq_size), 0]
+        x.append(window)
+        y.append(dataset[i+seq_size, 0])
+
+    return np.array(x), np.array(y)
 
 def main():
     JWT_TOKEN = get_token()
@@ -265,31 +332,110 @@ def main():
         df_filtered = df_filtered.set_index(pd.DatetimeIndex(df_filtered['ts']))
 
         #adjust time to local time by adding 7 hours to timestamp index
-        df_filtered.index + pd.DateOffset(hours=7)
+        df_filtered.index = df_filtered.index + pd.DateOffset(hours=7)
+        df_filtered = df_filtered.drop(columns=['ts'])
+        df_filtered['temp'] = df_filtered['temp'].astype(float)
+
+        # df_filtered['temp'].astype(float).plot()
+        # plt.show()
 
         # write the filtered output to csv file
         pd.DataFrame.to_csv(df_filtered, 'filtered_out.csv', sep=',', na_rep='--', index=False)
 
-        #clean data
-        cleanDataDf = clean_data(df_filtered)
-        #print(cleanDataDf)
+        # Convert pandas dataframe to numpy array
+        dataset = df_filtered.values
+
+        #Normalize the dataset
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        dataset = scaler.fit_transform(dataset)
+
+        print(dataset[0:10])
+
+        train_size = int(len(dataset) * 0.66)
+        test_size = len(dataset) - train_size
+        train, test = dataset[0:train_size, :], dataset[train_size:len(dataset),:]
+
+        seq_size = 5
+        trainX, trainY = to_sequences(train, seq_size)
+        testX, testY = to_sequences(test, seq_size)
+
+        print("building deep model ...")
+
+        # create and fit dense model
+        model = Sequential()
+        model.add(Dense(64, input_dim=seq_size, activation='relu'))
+        model.add(Dense(1))
+        model.compile(loss='mean_squared_error', optimizer='adam', metrics=['acc'])
+        print(model.summary())
+
+        model.fit(trainX, trainY, validation_data=(testX, testY), verbose=2, epochs=100)
+
+        trainPredict = model.predict(trainX)
+        testPredict = model.predict(testX)
+
+        trainPredict = scaler.inverse_transform(trainPredict)
+        trainY_inverse = scaler.inverse_transform([trainY])
+        testPredict = scaler.inverse_transform(testPredict)
+        testY_inverse = scaler.inverse_transform([testY])
+
+        trainScore = math.sqrt(mean_squared_error(trainY_inverse[0], trainPredict[:,0]))
+        print('Train Score: %.2f RMSE' %(trainScore))
+
+        testScore = math.sqrt(mean_squared_error(testY_inverse[0], testPredict[:, 0]))
+        print('Test Score: %.2f RMSE' % (testScore))
+
+        trainPredictPlot = np.empty_like(dataset)
+        trainPredictPlot[:, :] = np.nan
+        trainPredictPlot[seq_size:len(trainPredict)+seq_size, :] = trainPredict
+
+        testPredictPlot = np.empty_like(dataset)
+        testPredictPlot[:, :] = np.nan
+        testPredictPlot[len(trainPredict)+(seq_size*2)++1:len(dataset)-1, :] = testPredict
+
+        plt.plot(scaler.inverse_transform(dataset))
+        plt.plot(trainPredictPlot)
+        plt.plot(testPredictPlot)
+        plt.show()
+
+        #check if the data is stationary (Dickey-fuller test)
+        # from statsmodels.tsa.stattools import adfuller
+        # adf, pvalue, usedlag_, nobs_, critical_values_, icbest_ = adfuller(df_filtered)
+        # print("pvalue = ", pvalue, " if above 0.5, data is not stationary")
+
+        ###x, y = df_to_x_y(df_filtered, WINDOW_SIZE)
+
+        #print(x.shape, y.shape)
+
+        #tensorflow prediction on original data
+
+        ###model_lstm(x, y)
+
+        #tensorflow prediction on cleaned data
+
+        # #clean data
+        # cleanDataDf = clean_data(df_filtered)
+        # # cleanDataDf['max_temp'].astype(float).plot()
+        # # plt.show()
+        # #print(cleanDataDf)
+        # #
+        # # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
+        # #
+        # #split data into training and test
+        # #train, test = splitData(cleanDataDf)
+        # #print(train.head(68))
+        # # print(test)
         #
-        # #print(df4.groupby(pd.Grouper(freq='D')).value.agg(['max', 'idxmax']))
+        # #plot train, test; predict; and plot forcast
+        # #predict_plot(train, test, tag_name)
         #
-        #split data into training and test
-        #train, test = splitData(cleanDataDf)
-        #print(train.head(68))
-        # print(test)
-
-        #plot train, test; predict; and plot forcast
-        #predict_plot(train, test, tag_name)
-
-        #predict future values
-        data_forcast = predict_future(cleanDataDf)
-
-        # and send to spectare
-        prediction_to_spectare(data_forcast, tag_name)
-
+        # #predict future values
+        # data_forcast = predict_future(cleanDataDf)
+        #
+        # # and send to spectare
+        # #prediction_to_spectare(data_forcast, tag_name, True)
+        #
+        # # and also send max_tem history to spectare
+        # #prediction_to_spectare(cleanDataDf, tag_name, False)
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
